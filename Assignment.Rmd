@@ -1,0 +1,154 @@
+---
+title: Analysis of Human Activity Recognition(HAR) dateset to predict the manner of
+  exercise.
+author: "Diptam Dutta"
+date: "November 20, 2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+## Data
+
+The training data for this project are available here: [Training Data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+The test data are available here:[Test Data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+## Data Processing
+### Load required Library
+
+```{r, message=F, warning=F}
+library(caret)
+library(ggplot2)
+library(reshape2)
+library(Amelia)
+library(gridExtra)
+library(dplyr)
+library(rattle)
+library(randomForest)
+set.seed(2017)
+```
+
+### Download the data
+
+```{r}
+#download Training Data
+if (!"pml-training.csv" %in% dir("./")) {
+        download.file(
+        "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+        destfile = "pml-training.csv"
+        )
+}
+
+#Download Test Data
+if (!"pml-testing.csv" %in% dir("./")) {
+        download.file(
+        "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+        destfile = "pml-testing.csv"
+        )
+}
+
+training <-read.csv("pml-training.csv",sep = ",",header = T ,na.strings=c("NA","#DIV/0!",""))
+testing <-read.csv("pml-testing.csv",sep = "," ,header = T ,na.strings=c("NA","#DIV/0!",""))
+nzv <- nearZeroVar(training,saveMetrics=TRUE)
+```
+
+The results are too large to display, but the result set have a lots of missing values column, so using Amelia package we can see the missing values
+
+```{r}
+missmap(training,main = "missingness map of training dateset")
+```
+
+Even though there are a lot of continious and integer variable in the data, an interesting pattern we can obtain from the factor variables ie. `user_name`, `classe`, etc. ie. in the `qplot` of the training data we can see that participants of this observation performed this trail in temporary order.
+
+```{r}
+theme_set(theme_bw(base_size = 12))
+classe_time <- qplot(classe, cvtd_timestamp, data=training, color=user_name, size=I(3))
+Classe_num <- qplot(classe, num_window, data=training, color=user_name, size=I(3))
+
+grid.arrange(classe_time, Classe_num, ncol=2)
+```
+
+This relationship does allow us to predict the validation data but will fail if we try to accurately predict new data given only metered measurements.
+So Let's exclude `cvtd_timestamp` & `user_name` from the dataset.
+
+```{r}
+#Clean Traning data
+training <- filter(training, new_window == "no")
+training <- Filter(function(x)!all(is.na(x)), training)
+training <- select(training, -X, -new_window, -user_name, -cvtd_timestamp, 
+                   -raw_timestamp_part_1, -raw_timestamp_part_2, -num_window)
+#Clean Test Data
+testing <- Filter(function(x)!all(is.na(x)), testing)
+testing <- select(testing, -X, -new_window, -user_name, -cvtd_timestamp, 
+                  -raw_timestamp_part_1, -raw_timestamp_part_2, -num_window)
+# Update Near Zero Variance 
+nzv <- nearZeroVar(training, saveMetrics=TRUE)
+```
+
+### Let's prune the variable that are highly correlate
+
+```{r}
+cor.matrix <- cor(training[sapply(training, is.numeric)])
+c <- melt(cor.matrix)
+qplot(x=Var1, y=Var2, data=c, fill=value, geom="tile") +
+  scale_fill_gradient2(limits=c(-1, 1)) +
+   theme(axis.text.x = element_text(angle=-90, vjust=0.5, hjust=0))
+```
+
+As we can see the variables are highly correlated, so let's prune the dataset more by removing the variables which are highly correlated(0.90)
+
+```{r}
+c <- findCorrelation(cor.matrix, cutoff = .90)
+training <- training[,-c]
+testing <- testing[,-c]
+```
+
+### Partitioning the data
+
+Partitioning the training data into 70% vs 30% to continue the analysis.
+
+```{r}
+inTrain <- createDataPartition(y=training$classe, p=0.7, list=FALSE)
+myTrain <- training[inTrain, ]
+myTest <- training[-inTrain, ]
+```
+
+### Decision Tree
+
+```{r}
+fancyRpartPlot((train(classe ~ ., method="rpart", data=myTrain))$finalModel)
+```
+
+### Random Forests Model
+
+```{r}
+mtry <- tuneRF(myTrain[,-46], myTrain$classe, ntreeTry=500, stepFactor=1.5,improve=0.01, plot=FALSE, trace=TRUE, dobest=FALSE)
+modfitRF <- randomForest(classe~.,data=myTrain, mtry=9, ntree=500)
+pred <- predict(modfitRF, myTest)
+confusionMatrix(pred, myTest$classe)
+```
+
+The prediction is resulting very accurate with the `Accuracy : 0.995` over testing dataset.
+
+### Prediction
+
+Let's use the model to predict the classes of testing data
+
+```{r}
+predTest <- predict(modfitRF, testing)
+predTest
+```
+
+
+
